@@ -1,0 +1,344 @@
+---
+title: "Assessment of rabies risk across Bangladesh districts: A One Health analysis of ecological and social drivers"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    number_sections: true
+---
+# Introduction
+
+Rabies remains one of the most devastating zoonotic diseases globally, causing nearly 60,000 human deaths annually, primarily in Asia and Africa. In Bangladesh, rabies poses a persistent threat to public health, animal health, and livelihoods. Despite substantial progress through the country’s National Rabies Elimination Strategy, including mass dog vaccination and public awareness campaigns, Bangladesh still experiences preventable human deaths due to dog-mediated rabies.
+
+Recognizing the critical need for an integrated, cross-sectoral approach, the Food and Agriculture Organization of the United Nations (FAO) has been supporting the Government of Bangladesh in strengthening its rabies control efforts under a One Health approach This includes collaborative initiatives between human health, animal health, and environmental sectors to enhance disease surveillance, improve data sharing, and inform risk-based interventions.
+
+As highlighted in FAO’s recent support of the “Rabies Situation Analysis and Planning Workshop” in Dhaka (2023), there is a growing need for robust, evidence-based tools to assess rabies risk at subnational scales. Understanding the spatial distribution and environmental drivers of rabies cases is crucial for targeting prevention and control measures more effectively, especially in high-risk areas where health system resources may be limited.
+
+## Objectives
+
+This short project aims to **assess the determinants of human rabies cases in Bangladesh** by combining veterinary, human health, and ecological data within a One Health framework. Specific objectives include:
+
+- To **analyze the spatial distribution** of reported human rabies cases at the district level;
+- To **integrate and model ecological, veterinary, and health-related factors** influencing rabies risk;
+- To **develop predictive spatial risk maps** that can highlight surveillance priorities and knowledge gaps;
+- To **demonstrate the potential of machine learning and environmental modelling** in operationalizing One Health approaches for zoonotic disease surveillance
+
+<!-- By combining human health, veterinary, and environmental data, this study contributes to the growing body of applied One Health research in Bangladesh and supports national goals toward the elimination of dog-mediated human rabies by 2030. -->
+
+# Methods
+I collected human rabies cases reported in [Ghosh et al., 2024, doi.org/10.1016/j.lansea.2024.100452] derived from government surveillance in Bangladesh between 2019 and 2022. Fig. 1 shows the district-level distribution of human rabies cases.
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+library(tidyverse)
+library(sf)
+library(ggplot2)
+library(ranger)
+library(tidymodels)
+library(patchwork)
+library(knitr)
+library(kableExtra)
+library(iml)
+require(BBmisc)
+require(shapviz)
+require(ggbeeswarm)
+require(kernelshap)
+require(patchwork)
+require(ggpubr)
+```
+
+
+```{r setup, include=FALSE}
+
+setwd("C:/Users/ndrto/Desktop/FAO_stuff/RabiesFAO")
+FinalDataset <- readRDS("Data/FinalDatasetRabiesBGD.rds")
+
+
+```
+
+
+```{r echo=FALSE}
+# Continuous palette
+palette_hexMapRep <- as.character(paletteer::paletteer_d("MoMAColors::Althoff"))
+
+# Plot observed rabies cases
+st_as_sf(FinalDataset) %>%
+  ggplot() +
+  geom_sf(aes(fill = cases)) +
+  scale_fill_gradientn(
+    colors = palette_hexMapRep,
+    name = "Number of cases"
+  ) +
+  theme_minimal()+
+  ggtitle("Fig.1 Reported human rabies cases (2019-2022)")
+
+```
+
+
+## Predictor Variables
+
+To identify the key determinants of human rabies cases in Bangladesh, I compiled a set of predictor variables reflecting ecological, veterinary, and socio-economic dimensions (Table 1). These were selected based on relevance to rabies transmission dynamics and data availability at the district level. All variables were collected or extracted at the district level.
+
+| Variable Name                   | Description                                                                 | Source                                        | Rationale                                                                 |
+|--------------------------------|-----------------------------------------------------------------------------|-----------------------------------------------|--------------------------------------------------------------------------|
+| **Population density**           | Average population density per 1Km grid cell                      | WorldPop                                          | Represents potential human exposure to rabies                                   |
+| **Vacc. coverage (%)**     | Percentage of vaccinated dogs in mass vaccination campaigns                 | Ghosh et al., 2024                                           | Indicator of rabies control in the dog population                    |
+| **Dog density**      | Average dog density per 1Km grid cell                               | Ghosh et al., 2024                                     | Represents hazard  of dog-mediated rabies                   |
+| **Rural pop. (%)**     | Percentage of district population living in rural areas                     | Bangladesh Bureau of Statistics (BBS)         | May influence healthcare access and dog population dynamics              |
+| **Shrub cover (%)**                       | Percentage of district covered by shrubs                                 | Global Land Cover-SHARE (GLC-SHARE)                          | Land cover related to dog presence and human exposure      |
+| **Distance to city**            | Average travel time to nearest city (per 1Km grid cell)                       | FAO-Data Hand-in-Hand initiative                          | Influences healthcare access |
+| **Poverty rate (%)**                | Percentage of the population that lives below the official national upper poverty line                            | World Bank                                           | Socioeconomic barrier to PEP access and dog vaccination                 |
+| **District area**     | District area (Km^2)                                      | GADM                                      | Used to control for district size                            |
+| **Reservoir richness**     | Richness of carnivore and bat rabies reservoirs                                       | Worsley-Tonks et al., 2020; IUCN Red List                                      | Accounts for presence of wildlife rabies reservoirs                            |
+
+## Modelling Approach
+
+I used a **Random Forest regression model** to predict the number of reported human rabies cases per district based on the selected predictor variables. Random forest is a machine learning algorithm that is particularly suitable for handling complex, nonlinear relationships and multicollinearity between predictors.
+
+To evaluate model performance and generalizability, I implemented a **Leave-One-Out Cross-Validation (LOOCV)** approach, where each district was iteratively left out during model training and then used for testing. Model accuracy was assessed using Root Mean Square Error (RMSE).
+
+The final model was used to generate spatial predictions of rabies risk across Bangladesh and assess variable importance using SHAP (SHapley Additive exPlanations) values.
+
+# Results
+## Model performance and estimates of rabies risk
+The Random Forest model demonstrated solid predictive accuracy, with an average Root Mean Square Error (RMSE) of 3 (95% CI: [0, 8]). This indicates that, on average, the model’s predicted number of rabies cases deviates by approximately three cases from the observed counts. As the number of rabies cases is potentially severely underestimated in the area, I will refer to the predicted number of cases as high and low risk. As shown in Fig. 2, highest risk is primarily predicted in densely populated and wealthier districts, suggesting a potentially strong effect of underreporting of the disease in humans in areas where healthcare facilities are scarce.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# Preparation: Normalising predictors
+FinalDataset[c(3:7, 9:12)] <- normalize(FinalDataset[c(3:7, 9:12)], method = "standardize")
+
+# Preparation: Separating training set from prediction set
+data_train <- FinalDataset %>% filter(!is.na(cases)) %>% select(-geometry)
+data_predict_na <- FinalDataset %>% filter(is.na(cases)) %>% select(-geometry)
+
+# District List for modelling
+districts <- data_train$NAME_2
+
+vars <- c(
+  "Shrub_cover" = "Shrub cover (%)",
+  "Rural.Population...."= "Rural pop. (%)",
+  "Poverty.headcount.ratio...." = "Poverty rate (%)",
+  "time_to_city"= "Distance to city",
+  "mean_coverage"= "Vacc. coverage (%)",
+  "area_km2" = "District area",
+  "n_reservoirs"= "Reservoir richness",
+  "dog_density" = "Dog density",
+  "pop_density" = "Pop. density")
+
+rec <- recipe(cases ~ ., data = data_train[-1]) %>% 
+  update_role(cases, new_role = "outcome")
+
+# Modello
+rf_spec <- rand_forest(trees = 500) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("regression")
+
+# Pipeline
+rf_wf <- workflow() %>%
+  add_recipe(rec) %>%
+  add_model(rf_spec)
+
+# Leave one out validation
+set.seed(1234)
+lodo_results <- map_dfr(districts, function(dist_name) {
+  training <- data_train %>% filter(NAME_2 != dist_name)
+  testing <- data_train %>% filter(NAME_2 == dist_name)
+
+  rf_fit <- rf_wf %>% fit(data = training)
+  pred <- predict(rf_fit, new_data = testing) %>%
+    bind_cols(testing %>% select(NAME_2, cases))
+
+  return(pred)
+})
+
+# Compute RMSE e CI 95%
+rmse_val <- rmse(lodo_results, truth = cases, estimate = .pred)
+rmse_ci <- lodo_results %>%
+  mutate(error = (.pred - cases)^2) %>%
+  summarise(
+    mean_rmse = sqrt(mean(error)),
+    lower = sqrt(quantile(error, 0.025)),
+    upper = sqrt(quantile(error, 0.975))
+  )
+
+# print(rmse_val)
+# print(rmse_ci)
+
+
+# Prediction on NA districts
+set.seed(123)
+rf_fit_full <- rf_wf %>% fit(data = data_train)
+
+pred_na <- predict(rf_fit_full, new_data = data_predict_na) %>%
+  bind_cols(data_predict_na %>% select(NAME_2)) %>%
+  rename(PredictedCases = .pred)
+
+# Get all predictions
+pred_all <- lodo_results %>%
+  rename(PredictedCases = .pred) %>%
+  bind_rows(pred_na)
+
+# Join with geometry
+FinalPredicted <- FinalDataset %>%
+  left_join(pred_all %>% select(NAME_2, PredictedCases), by = "NAME_2")
+
+palette_hexMap <- as.character(paletteer::paletteer_d("rcartocolor::OrYel"))
+
+# Plot risk
+st_as_sf(FinalPredicted) %>%
+  ggplot() +
+  geom_sf(aes(fill = PredictedCases)) +
+  scale_fill_gradientn(
+    colors = palette_hexMapRep,
+    breaks = c(1.197967, 7.41),
+    labels = c("low", "high"),
+    name = "Rabies risk"
+  ) +
+  theme_minimal()+
+  ggtitle("Fig.2 Predicted risk of human rabies")
+
+```
+
+
+## Predictors of rabies cases
+I run an analysis of SHAP values to highlight the most important predictors of rabies cases. In this context, SHAP values quantified the effect (positive or negative) of a specific variable on the predicted number of rabies cases in each district. As expected, higher human and dog population densities were associated with increased rabies risk (Fig. 3). The SHAP analysis also highlighted a likely reporting bias. Specifically, higher rural population density was associated with a decrease in predicted risk, in agreement to existing evidence that rabies cases in rural areas are underreported due to limited healthcare access and diagnostic capacity (Hossain et al., 2011). Similarly, poverty appeared to reduce predicted rabies risk, suggesting that districts with lower socioeconomic status may face systemic barriers to disease detection and notification.
+
+Interestingly, estimated dog vaccination coverage was also positively associated with rabies risk. This may reflect the tendency of vaccination campaigns to be implemented reactively in districts with a known history of reported cases. Alternatively, it may indicate that dog vaccination is more commonly conducted in areas with stronger public health infrastructure, i.e. where rabies surveillance and case reporting are already active. 
+
+
+```{r include=FALSE}
+X <- rbind(data_predict_na, data_train) %>% select(-cases)
+y <- data_train$cases
+
+# predictor <- Predictor$new(
+#   model = rf_fit_full,
+#   data = X,
+#   y = y,
+#   # predict.function = pred_fun,
+#   type = "numeric"
+# )
+
+shap_values <- permshap(rf_fit_full, X = X)
+
+
+# shap_values <- shapviz(shap_values)
+
+# sv_importance(shap_values, show_numbers = TRUE)
+# sv_importance(shap_values, kind = "bee")
+# sv_dependence(shap_values, v = xvars) &
+#   ylim(-0.14, 0.24) &
+#   ylab("Probability")
+
+data_and_S <- merge.data.frame(X %>% pivot_longer(2:10, names_to = "Var", values_to = "Val") %>% group_by(Var) %>% mutate(scaled_Val = (Val - min(Val))/(max(Val)-min(Val))), cbind(X[1], as.data.frame(shap_values$S)[-1]) %>% pivot_longer(2:10, names_to = "Var", values_to = "Shap"), by = c(1, 2))
+
+
+
+```
+
+```{r echo=FALSE}
+palette_colors <- paletteer::paletteer_d("RColorBrewer::RdYlGn")
+palette_hex <- as.character(palette_colors)
+
+data_and_S %>% 
+  group_by(Var) %>% 
+  mutate(sum_Shap = sum(abs(Shap))) %>% 
+  ggplot(aes(x = Shap, y = reorder(Var, sum_Shap))) +
+  # ggbeeswarm::geom_quasirandom(groupOnX = FALSE, varwidth = TRUE, size = 0.4, alpha = 0.25, aes(color = Val)) +
+  geom_jitter(height = 0.2, aes(color = scaled_Val), size = 2.5)+
+  xlab("SHAP value") +
+  scale_color_gradientn(colors = rev(palette_hex),
+                        breaks = c(0, 1),
+    labels = c("min", "max"))+
+  scale_y_discrete(labels = vars)+
+  theme_minimal()+
+  labs(color = "Variable value", y = "", x = "SHAP values\n(Variable contribution to rabies risk)")+
+  ggtitle("Fig. 3 Predictors' contribution to rabies risk")
+
+palette_colorsMapShap <- paletteer::paletteer_d("PrettyCols::RedBlues")
+palette_hexMapShap <- as.character(palette_colorsMapShap)
+
+# Variable contribution to expected cases (Positive vs Negative)
+merged_data <- merge.data.frame(data_and_S, st_as_sf(FinalPredicted)[c(1, 13)], by = 1)
+min_val <- min(merged_data$Shap, na.rm = TRUE)
+max_val <- max(merged_data$Shap, na.rm = TRUE)
+
+# Define middle point at 0
+midpoint <- 0
+range_total <- max_val - min_val
+
+# Rescale 0 relative to full range for gradient values
+values_scaled <- scales::rescale(c(min_val, 0, max_val), from = c(min_val, max_val))
+
+
+merged_data %>%
+  filter(Var %in% c("pop_density", "dog_density", "mean_coverage", "Poverty.headcount.ratio....", "Rural.Population....")) %>% 
+  st_as_sf() %>%
+  ggplot() +
+  geom_sf(aes(fill = Shap)) +
+  scale_fill_gradientn(
+    colors = rev(palette_hexMapShap),
+    values = values_scaled,
+    breaks = c(min_val, 0, max_val),
+    labels = c("negative", "0", "positive")
+  ) +
+  facet_wrap(~Var, nrow = 2, labeller = labeller(Var = vars)) +
+  theme_void() +
+  labs(
+    fill = "Variable contribution\nto expected cases",
+    y = "", x = ""
+  )+theme(legend.position = c(0.88,.24))+
+   labs(tag = "b)") -> plot_b
+
+# Values of top predictors
+palette_hexVars <- as.character(paletteer::paletteer_d("LaCroixColoR::Orange"))
+
+FinalDataset %>%
+  pivot_longer(c(3:7, 9:12)) %>% 
+  st_as_sf() %>%
+  filter(name %in% c("pop_density", "dog_density", "mean_coverage", "Poverty.headcount.ratio....", "Rural.Population....")) %>% 
+  ggplot() +
+  geom_sf(aes(fill = value)) +
+  scale_fill_gradientn(
+    colors = rev(palette_hexVars),
+    breaks = c(-5.78, 6.73),
+    labels = c("low", "high")) +
+  facet_wrap(~name, nrow = 2, labeller = labeller(name = vars)) +
+  theme_void() +
+  labs(
+    fill = "Variable value",
+    y = "", x = ""
+  )+theme(legend.position = c(0.88,.24))+
+   labs(tag = "a)")-> plot_a
+
+```
+
+
+When mapping the contribution of a subset of important variables to rabies risk, it is possible to see what factors mostly contribute to rabies risk across the different districts (Fig. 4). Panel (a) shows the spatial distribution of selected predictor variables. Districts with higher human and dog densities are generally more urbanized, while higher poverty ratios and rural population percentages are more common in peripheral areas. Panel (b) presents the corresponding SHAP values, which quantify the effect of each variable on the predicted number of human rabies cases. Red shading indicates a positive contribution to expected case numbers (i.e., increased predicted risk), while blue represents a negative contribution. 
+
+Rabies risk is primarily driven by variables associated with urbanized environments—particularly high human and dog densities—indicating that reported cases cluster in areas where surveillance is more likely to capture them. Conversely, higher poverty ratios and rural population percentages, tend to reduce predicted case numbers. This pattern supports the hypothesis of substantial underreporting in underserved districts, where lower health system capacity and weaker surveillance infrastructure can limit the detection of human rabies cases.
+
+```{r fig4, echo=FALSE, fig.width=12, fig.height=6}
+
+ggarrange(plot_a, plot_b, ncol = 2) -> final_plot
+
+annotate_figure(final_plot,
+                top = text_grob("Fig. 4 Spatially explicit predictors' contribution to rabies risk",
+                                size = 14))
+
+
+```
+
+# Conclusion
+This analysis illustrates how integrated, data-driven approaches rooted in the One Health framework can effectively support the identification of zoonotic disease risk patterns—particularly in complex, data-scarce settings. By combining ecological, veterinary, and socioeconomic data, and applying explainable machine learning techniques, this project not only maps the spatial distribution of human rabies risk in Bangladesh, but also reveals structural disparities in surveillance capacity and disease reporting.
+
+The findings emphasize the urgent need to bridge existing knowledge gaps, especially in rural and underserved districts where rabies incidence may be underestimated. This underreporting has profound implications for equity and public health: populations living in poverty or remote areas may be disproportionately affected by rabies but remain invisible to national health systems.
+
+To move towards more equitable and effective disease control, future efforts should prioritize:
+
+- Strengthening surveillance and reporting systems in rural and impoverished areas.
+- Enhancing access to post-exposure prophylaxis (PEP) and awareness campaigns in underrepresented communities.
+- Integrating local ecological and social contexts into rabies prevention strategies.
+- Investing in capacity development and technical support at the local level to ensure sustained implementation of One Health practices.
+
+Ultimately, this type of integrated modelling supports the FAO’s mandate to promote sustainable, inclusive, and resilient agrifood and health systems. It underscores that controlling zoonotic diseases strongly demands tackling social inequalities and gaps in access to care.
